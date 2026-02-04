@@ -41,21 +41,33 @@ WiFiUDP udp;
 const uint16_t UDP_PORT = 6969;
 
 #define TOTAL_PLAYER_COUNT 4
-enum playerGameIDOrder { PLAYER_1, PLAYER_2, PLAYER_3, PLAYER_4, PLAYER_5, PLAYER_6, PLAYER_7, PLAYER_8 };
+enum playerGameIDOrder 
+{ 
+    NOT_PLAYING = 0, 
+    PLAYER_1 = 1, 
+    PLAYER_2 = 2, 
+    PLAYER_3 = 3, 
+    PLAYER_4 = 4, 
+    PLAYER_5 = 5, 
+    PLAYER_6 = 6, 
+    PLAYER_7 = 7, 
+    PLAYER_8 = 8 
+};
 
 struct PlayerClassStruct
 {
     int playerHealth = 40; // TODO: make starting life total a setting that can change
-    playerGameIDOrder playerId;
+    playerGameIDOrder playerId = playerGameIDOrder::NOT_PLAYING;
 };
 
-//struct __attribute__((packed)) GameStateClassStruct // TODO: Split host struct and game struct apart
+//struct __attribute__((packed)) GameStateClassStruct
 struct GameHostStruct
 {
-    playerGameIDOrder Player1_ID;
-    playerGameIDOrder Player2_ID;
-    playerGameIDOrder Player3_ID;
-    playerGameIDOrder Player4_ID;   
+    // host is always player ID #1
+    playerGameIDOrder Player1_ID = playerGameIDOrder::PLAYER_1;
+    playerGameIDOrder Player2_ID = playerGameIDOrder::NOT_PLAYING;
+    playerGameIDOrder Player3_ID = playerGameIDOrder::NOT_PLAYING;
+    playerGameIDOrder Player4_ID = playerGameIDOrder::NOT_PLAYING;  
 
     IPAddress Player1_IP_Address;
     uint16_t Player1_Port;
@@ -70,8 +82,7 @@ struct GameHostStruct
     uint16_t Player4_Port;
 };
 
-
-struct GameStateStruct
+struct __attribute__((packed)) GameStateStruct
 {
     int player1_Health = 40;
     int player2_Health = 40;
@@ -93,6 +104,12 @@ lv_obj_t * availableSSIDList;
 // |                             USEFUL FUNCTIONS                          |
 // |                                                                       |
 // O=======================================================================O
+
+void delaySafeMilli(unsigned long timeToWait)
+{
+    unsigned long start = millis();
+    while((millis() - start) <= timeToWait) { /* do nothing but don't block */ }
+}
 
 void disconnectWifi()
 {
@@ -596,17 +613,31 @@ void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char
     }
 }
 
-const char* helloDiscoveryMessage = "requestJoin";
+const char* UDPMSG_DiscoveryMessage = "R2J"; // request to join
+const char* UDPMSG_requestDisconnectMessage = "R2DC"; // request to disconnect
+const char* UDPMSG_acknowledgementMessage = "OK";
+const char* UDPMSG_gameStartingMessage = "GETREADY";
 void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()
 {
-    
+    PlayerClassStruct playerGameData;
+    // guest does a udp.send "R2J"
+    // host responds back with PID=(the playerGameIDOrder enumerated value)
+    unsigned long startTime = millis();
+    unsigned long timeOut = 60000;
+    bool game_started = false;
+    bool exit_loop = false;
+    while(!game_started && !exit_loop)
+    {
+
+
+        if(millis() - startTime >= timeOut) exit_loop = true;
+    }
 }
 
 void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 {
     // to get a senders IP address and port:
-    //IPAddress remote = udp.remoteIP();
-    //uint16_t port = udp.remotePort();
+    
 
     // TODO: Invent some kind of "hello" discovery packet (started above with helloDiscoveryMessage)
     // 1. The host sits and waits in a loop, ready to parse any packets it receives. First it checks if a message is a known size, if not it tries to parse it as a string
@@ -618,30 +649,99 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
     // 5. Once 4 total players have joined the game, the host will move to the HOST_GAME_LOOP
     // 6. Inside the HOST_GAME_LOOP, the host will collect status from each player, update the gamestate struct, and send out the gamestate struct to the guests
 
+    GameStateStruct gameStateData;
+    GameHostStruct gameHostData;
+
+    gameHostData.Player1_IP_Address = WiFi.localIP();
+    gameHostData.Player1_Port = UDP_PORT;
+
     bool exit_loop = false;
     bool game_started = false;
     unsigned long startTime = millis();
-    unsigned long timeOut = 60000;
-    int numJoinedPlayers = 0;
+    unsigned long timeOut = 120000;
+    int numJoinedPlayers = 1; // host counts as 1 player
     char rxBuffer[128];
     while(!game_started && !exit_loop)
     {
-        // negotiation packets will essentially be string-based
         int packetSize = udp.parsePacket();
         if(packetSize > 0)
         {            
+            IPAddress senderIP = udp.remoteIP();
+            uint16_t senderPort = udp.remotePort();
+
             int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
             rxBuffer[len] = '\0';
             // buffer is now effectively a string with a null terminator
+            // negotiation packets will essentially be string-based
             Serial.print("HOST_NEGOTIATING: Recieved packet [");
             Serial.print(rxBuffer);
             Serial.println("]");
 
-            // TODO: compare the contents of buffer with predefined messages
-            // if a guest is saying hello, sequentially assign them player ID
-            // (while the host records IPAddress and port of player)
-            // until 4 guests total have joined
-            // once 4 guests have joined, the game loop can be entered
+            if(strcmp(rxBuffer, UDPMSG_DiscoveryMessage) == 0)
+            {
+                // a new guest is attempting to join
+                int playerNum = numJoinedPlayers + 1;
+                String responseMsg = "PID=";
+                responseMsg += playerNum;
+
+                // send the player back their ID and give them 2 seconds to ack
+                udp.beginPacket(senderIP, senderPort);
+                udp.write((const uint8_t*)responseMsg.c_str(), strlen(responseMsg.c_str()));
+                udp.endPacket();
+
+                // now wait a bit for their response
+                bool receivedAck = false; 
+                bool newPlayerTimeout = false;
+                unsigned long newPlayerTimeToWait = 2000;
+                unsigned long newPlayerStartTime = millis();
+                while(!receivedAck || !newPlayerTimeout)
+                {
+                    int packetSize = udp.parsePacket();
+                    if(packetSize > 0)
+                    {
+                        if(strcmp(rxBuffer, UDPMSG_acknowledgementMessage) == 0)
+                        {
+                            receivedAck = true;
+                        }
+                    }
+                    if(millis() - newPlayerStartTime >= newPlayerTimeout) newPlayerTimeout = true;
+                    delaySafeMilli(50);
+                }
+
+                if(newPlayerTimeout)
+                {
+                    // guest did not respond with ACK, maybe show an error message on the hosting screen
+                }
+                else if(receivedAck)
+                {
+                    numJoinedPlayers++;
+                    
+                    // TODO: someday be a better coder and move this all to arrays so I can use loops
+                    if(numJoinedPlayers == 2)
+                    {
+                        gameHostData.Player2_ID = (playerGameIDOrder)numJoinedPlayers;
+                        gameHostData.Player2_IP_Address = senderIP;
+                        gameHostData.Player2_Port = senderPort;
+                    }
+                    else if(numJoinedPlayers == 3)
+                    {
+                        gameHostData.Player3_ID = (playerGameIDOrder)numJoinedPlayers;
+                        gameHostData.Player3_IP_Address = senderIP;
+                        gameHostData.Player3_Port = senderPort;
+                    }
+                    else if(numJoinedPlayers == 4)
+                    {
+                        gameHostData.Player4_ID = (playerGameIDOrder)numJoinedPlayers;
+                        gameHostData.Player4_IP_Address = senderIP;
+                        gameHostData.Player4_Port = senderPort;
+                    }
+                }
+            }
+            else if(strcmp(rxBuffer, UDPMSG_requestDisconnectMessage) == 0)
+            {
+                // a connected guest is requesting to disconnect
+                // TODO: if it's neccessary
+            }
         }
 
         if(millis() - startTime >= timeOut) exit_loop = true;
@@ -651,13 +751,39 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 
     if(exit_loop) 
     {
-        // bummer, handle the timeout
+        // bummer, handle the timeout (print error message on screen exit to home screen)
         return;
     }
 
     if(game_started)
     {
         // move to the HOST_GAME_LOOP
+        // send a get ready packet to all the joined guests
+
+        // TODO: someday be a better coder and move this all to arrays so I can use loops
+
+        // tell player 2 to move to the game loop
+        udp.beginPacket(gameHostData.Player2_IP_Address, gameHostData.Player2_Port);
+        udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
+        udp.endPacket();
+
+        delaySafeMilli(100);
+
+        // tell player 3 to move to the game loop
+        udp.beginPacket(gameHostData.Player3_IP_Address, gameHostData.Player3_Port);
+        udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
+        udp.endPacket();
+
+        delaySafeMilli(100);
+
+        // tell player 4 to move to the game loop
+        udp.beginPacket(gameHostData.Player4_IP_Address, gameHostData.Player4_Port);
+        udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
+        udp.endPacket();
+
+        delaySafeMilli(100);
+
+        STATE_IN_GAME_HOST(gameHostData);
     }
 
 }
@@ -667,12 +793,12 @@ void STATE_JOINING_GAME_HOST()
 
 }
 
-void STATE_IN_GAME_GUEST()
+void STATE_IN_GAME_GUEST(PlayerClassStruct playerGameData)
 {
 
 }
 
-void STATE_IN_GAME_HOST()
+void STATE_IN_GAME_HOST(GameHostStruct gameHostData)
 {
 
 }
