@@ -49,12 +49,13 @@ struct PlayerClassStruct
     playerGameIDOrder playerId;
 };
 
-struct __attribute__((packed)) GameStateClassStruct
+//struct __attribute__((packed)) GameStateClassStruct // TODO: Split host struct and game struct apart
+struct GameHostStruct
 {
     playerGameIDOrder Player1_ID;
     playerGameIDOrder Player2_ID;
     playerGameIDOrder Player3_ID;
-    playerGameIDOrder Player4_ID;
+    playerGameIDOrder Player4_ID;   
 
     IPAddress Player1_IP_Address;
     uint16_t Player1_Port;
@@ -67,11 +68,20 @@ struct __attribute__((packed)) GameStateClassStruct
 
     IPAddress Player4_IP_Address;
     uint16_t Player4_Port;
+};
 
+
+struct GameStateStruct
+{
     int player1_Health = 40;
     int player2_Health = 40;
     int player3_Health = 40;
     int player4_Health = 40;
+
+    // what else?
+    // 1. turn order? but they'd have to remember to pass turn on the device that's not happening
+    // 2. commander damage? how to do that?
+    // 3. other permanent statuses like poison
 };
 
 // control that need to be globally available:
@@ -481,7 +491,7 @@ void setup()
 // |                                                                       |
 // O=======================================================================O
 
-const char* prefix = "box";
+//const char* prefix = "box";
 
 bool ssidStartsWithPrefix(const char* s)
 {
@@ -492,12 +502,16 @@ void STATE_HOSTING_GAME()
 {
     // TODO: Check if no game name and force them to name game
     const char* ssid = lv_textarea_get_text(taGameName);
+    // In order to filter out spurious SSIDs, I am appending
+    // the prefix "box" to the user's chosen SSID. I will
+    // then filter out all SSIDs found that do not start with "box"
     const char* prefix = "box";
     size_t len = strlen(prefix) + strlen(ssid) + 1;
     char* ssidWithPrefix = new char[len];
     strcpy(ssidWithPrefix, prefix);
     strcat(ssidWithPrefix, ssid);
 
+    // TODO: set password in settings screen lv_textarea_get_text(taGamePass);
     const char* password = "";
 
     disconnectWifi();
@@ -545,7 +559,7 @@ void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
         }
     }
 
-    lv_obj_t * availableSSIDList;
+    //lv_obj_t * availableSSIDList; // moved to global
     availableSSIDList = lv_list_create(lv_screen_active());
     lv_obj_set_pos(availableSSIDList, 10, 25);
     lv_obj_set_size(availableSSIDList, 300, 160);
@@ -617,11 +631,11 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
         if(packetSize > 0)
         {            
             int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
-            buffer[len] = '\0';
+            rxBuffer[len] = '\0';
             // buffer is now effectively a string with a null terminator
-            String.print("HOST_NEGOTIATING: Recieved packet [");
-            String.print(buffer);
-            String.println("]");
+            Serial.print("HOST_NEGOTIATING: Recieved packet [");
+            Serial.print(rxBuffer);
+            Serial.println("]");
 
             // TODO: compare the contents of buffer with predefined messages
             // if a guest is saying hello, sequentially assign them player ID
