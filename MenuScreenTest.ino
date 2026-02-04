@@ -2,12 +2,14 @@
 #include <TFT_eSPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <esp_wifi.h>
-#include "AsyncUDP.h"
+//#include "AsyncUDP.h"
 
 void STATE_HOSTING_GAME();
-void STATE_JOINING_GAME();
-void STATE_IN_GAME();
+void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS();
+void STATE_IN_GAME_GUEST();
+void STATE_IN_GAME_HOST();
 
 #define XPT2046_IRQ 36   // T_IRQ
 #define XPT2046_MOSI 32  // T_DIN
@@ -24,7 +26,7 @@ XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 int touchX = 0;
 int touchY = 0;
 
-#define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES / 10 * (LV_COLOR_DEPTH / 8))
+#define DRAW_BUF_SIZE (TFT_HOR_RES * TFT_VER_RES / 10 * (LV_COLOR_DEPTH / 8)) // 240 * 320 / 10 * (16 / 8)) = 15,360
 uint8_t* draw_buf;
 
 lv_obj_t* screen1; // home screen   [x]
@@ -34,15 +36,62 @@ lv_obj_t* screen4; // host screen   [ ]
 lv_obj_t* screen5; // game screen   [ ]
 
 uint8_t baseMAC[6] = { 0, 0, 0, 0, 0, 0 };
-AsyncUDP udp;
+//AsyncUDP udp;
+WiFiUDP udp;
+const uint16_t UDP_PORT = 6969;
 
+#define TOTAL_PLAYER_COUNT 4
+enum playerGameIDOrder { PLAYER_1, PLAYER_2, PLAYER_3, PLAYER_4, PLAYER_5, PLAYER_6, PLAYER_7, PLAYER_8 };
+
+struct PlayerClassStruct
+{
+    int playerHealth = 40; // TODO: make starting life total a setting that can change
+    playerGameIDOrder playerId;
+};
+
+struct __attribute__((packed)) GameStateClassStruct
+{
+    playerGameIDOrder Player1_ID;
+    playerGameIDOrder Player2_ID;
+    playerGameIDOrder Player3_ID;
+    playerGameIDOrder Player4_ID;
+
+    IPAddress Player1_IP_Address;
+    uint16_t Player1_Port;
+
+    IPAddress Player2_IP_Address;
+    uint16_t Player2_Port;
+
+    IPAddress Player3_IP_Address;
+    uint16_t Player3_Port;
+
+    IPAddress Player4_IP_Address;
+    uint16_t Player4_Port;
+
+    int player1_Health = 40;
+    int player2_Health = 40;
+    int player3_Health = 40;
+    int player4_Health = 40;
+};
+
+// control that need to be globally available:
 lv_obj_t* taGameName;
+lv_obj_t * availableSSIDList;
 
 // O=======================================================================O
 // |                                                                       |
 // |                             USEFUL FUNCTIONS                          |
 // |                                                                       |
 // O=======================================================================O
+
+void disconnectWifi()
+{
+    if(WiFi.status() == WL_CONNECTED)
+    {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+    }
+}
 
 void readMacAddress()
 {
@@ -60,6 +109,27 @@ String mac2String() {
   }
   return s;
 }
+
+// O=======================================================================O
+// |                                                                       |
+// |                             LIST EVENTS                               |
+// |                                                                       |
+// O=======================================================================O
+
+// THE JOINING PLAYER WILL ENTER THIS EVENT WHEN THEY SELECT AN SSID TO
+// CONNECT TO
+static void ssid_listbox_event_handler(lv_event_t *e) 
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * obj = lv_event_get_target_obj(e);
+    LV_UNUSED(obj);
+    if(code == LV_EVENT_CLICKED) 
+    {
+        //Serial.print("Clicked: "); Serial.println(lv_list_get_button_text(availableSSIDList, obj));
+        STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(lv_list_get_button_text(availableSSIDList, obj), "");
+    }
+}
+
 
 // O=======================================================================O
 // |                                                                       |
@@ -85,6 +155,7 @@ static void taGameName_event_cb(lv_event_t * e)
     }
 }
 
+
 // O=======================================================================O
 // |                                                                       |
 // |                             BUTTON EVENTS                             |
@@ -101,7 +172,7 @@ static void btn_event_screen1JoinButton_cb(lv_event_t* e)
     if(code == LV_EVENT_CLICKED)
     {
         loadScreen3();
-        STATE_JOINING_GAME();
+        STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS();
     }
 }
 
@@ -126,6 +197,7 @@ static void btn_event_screen1SettingsButton_cb(lv_event_t* e)
     }
 }
 
+
 // O-----------------------------------------------------------------------O
 // | SETTINGS SCREEN BUTTON EVENTS
 // O-----------------------------------------------------------------------O
@@ -135,6 +207,7 @@ static void btn_event_screenExitToHomeButton_cb(lv_event_t* e)
     lv_obj_t* btn = lv_event_get_target_obj(e);
     if(code == LV_EVENT_CLICKED)
     {
+        disconnectWifi();
         loadScreen1();
     }
 }
@@ -400,48 +473,192 @@ void setup()
     Serial.println( "Setup done, entering loop" );
 }
 
+
+
 // O=======================================================================O
 // |                                                                       |
 // |                       GAME STATES                                     |
 // |                                                                       |
 // O=======================================================================O
 
+const char* prefix = "box";
+
+bool ssidStartsWithPrefix(const char* s)
+{
+    return s && strncmp(s, "box", 3) == 0;
+}
+
 void STATE_HOSTING_GAME()
 {
+    // TODO: Check if no game name and force them to name game
     const char* ssid = lv_textarea_get_text(taGameName);
+    const char* prefix = "box";
+    size_t len = strlen(prefix) + strlen(ssid) + 1;
+    char* ssidWithPrefix = new char[len];
+    strcpy(ssidWithPrefix, prefix);
+    strcat(ssidWithPrefix, ssid);
+
     const char* password = "";
 
-    WiFi.disconnect();
+    disconnectWifi();
+    WiFi.softAP(ssidWithPrefix, password);
 
-    WiFi.softAP(ssid, password);
+    udp.begin(UDP_PORT);
 
-    IPAddress ip = WiFi.softAPIP();
+    STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS();
 }
 
-void STATE_JOINING_GAME()
+// FIND ALL VALID SSIDS AND DISPLAY THEM ON A LIST
+// CLICKING AN SSID ON THE LIST WILL FIRE AN EVENT
+// TO CONNECT TO THE SSID AND START THE GAME LOOP
+void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
 {
+    disconnectWifi();
     int n = WiFi.scanNetworks();
-
-    const char* SSIDList[n];
-    Serial.println("Printing all available WiFi SSIDs: ");
+    int boxSsids = 0;
     for (int i = 0; i < n; i++)
     {
-        SSIDList[i] = WiFi.SSID(i).c_str();
-
-        Serial.println(SSIDList[i]);
-        // drop down list LVGL example: https://forum.lvgl.io/t/dynamic-list-for-song-selection/11900
-        // TODO somehow populate a list of hosted WiFi games
-        // you can iterate through the active SSIDs using
-        // WiFi.SSID(i)
-        // then when you find the SSID you want to connect to, 
-        // use WiFi.begin(SSID, password); // password will be "" for now
-        // while(WiFi.status()) != WL_CONNECTED) { delay(100); }
+        if(ssidStartsWithPrefix(WiFi.SSID(i).c_str())) boxSsids++;
     }
 
+    if(boxSsids == 0)
+    {
+        // Error message to show the user that no boxes could
+        // be detected in the vicinity
+        lv_obj_t* errorLabel = lv_label_create(lv_screen_active());
+        lv_label_set_text(errorLabel, "Oh no! No other boxes detected! Try re-scan");
+        lv_obj_set_style_text_color(lv_screen_active(), lv_color_hex(0xffffff), LV_PART_MAIN);
+        lv_obj_align(errorLabel, LV_ALIGN_LEFT_MID, 0, 0);
+
+        disconnectWifi();
+        return;
+    }
+
+    String SSIDList[boxSsids];
+    int idx = 0;
+    for (int i = 0; i < n; i++)
+    {
+        if(ssidStartsWithPrefix(WiFi.SSID(i).c_str()))
+        {
+            SSIDList[idx] = WiFi.SSID(i);
+            idx++;
+        }
+    }
+
+    lv_obj_t * availableSSIDList;
+    availableSSIDList = lv_list_create(lv_screen_active());
+    lv_obj_set_pos(availableSSIDList, 10, 25);
+    lv_obj_set_size(availableSSIDList, 300, 160);
+
+    for(int i = 0; i < boxSsids; i++)
+    {
+        lv_obj_t *list_btn = lv_list_add_btn(availableSSIDList, LV_SYMBOL_RIGHT, SSIDList[i].c_str());
+        lv_obj_add_event_cb(list_btn, ssid_listbox_event_handler, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+// SSID has been chosen, now connect to host
+// and establish player ID 
+void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char* password)
+{
+    WiFi.begin(chosenSSID, password);
+    int tryCount = 0;
+    int numTries = 10;
+    while(WiFi.status() != WL_CONNECTED && tryCount <= numTries)
+    {
+        delay(100);
+        tryCount++;
+    }
+
+    if(tryCount >= numTries)
+    {
+        //TODO: Connection failure message on screen
+        Serial.print("Could not connect to SSID ");
+        Serial.println(chosenSSID);
+    }
+    else
+    {
+        STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST();
+    }
+}
+
+const char* helloDiscoveryMessage = "requestJoin";
+void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()
+{
+    
+}
+
+void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
+{
+    // to get a senders IP address and port:
+    //IPAddress remote = udp.remoteIP();
+    //uint16_t port = udp.remotePort();
+
+    // TODO: Invent some kind of "hello" discovery packet (started above with helloDiscoveryMessage)
+    // 1. The host sits and waits in a loop, ready to parse any packets it receives. First it checks if a message is a known size, if not it tries to parse it as a string
+    // 2. The guest, once connected to the SSID, immediately sends the host a helloDiscoveryMessage (maybe in a loop sending it multiple times)
+    // 3. The host grabs the guest's IPAddress and Port and assigns the player a sequentially-chosen player ID (from the enum... up to 8 players) 
+    // -----> The host is keeping a count of total joined players at this time
+    // -----> The host will always be PLAYER_1
+    // 4. Once the guest has been assigned its player ID, it moves to the GUEST_GAME_LOOP where it will send its life total to the host periodically 
+    // 5. Once 4 total players have joined the game, the host will move to the HOST_GAME_LOOP
+    // 6. Inside the HOST_GAME_LOOP, the host will collect status from each player, update the gamestate struct, and send out the gamestate struct to the guests
+
+    bool exit_loop = false;
+    bool game_started = false;
+    unsigned long startTime = millis();
+    unsigned long timeOut = 60000;
+    int numJoinedPlayers = 0;
+    char rxBuffer[128];
+    while(!game_started && !exit_loop)
+    {
+        // negotiation packets will essentially be string-based
+        int packetSize = udp.parsePacket();
+        if(packetSize > 0)
+        {            
+            int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+            buffer[len] = '\0';
+            // buffer is now effectively a string with a null terminator
+            String.print("HOST_NEGOTIATING: Recieved packet [");
+            String.print(buffer);
+            String.println("]");
+
+            // TODO: compare the contents of buffer with predefined messages
+            // if a guest is saying hello, sequentially assign them player ID
+            // (while the host records IPAddress and port of player)
+            // until 4 guests total have joined
+            // once 4 guests have joined, the game loop can be entered
+        }
+
+        if(millis() - startTime >= timeOut) exit_loop = true;
+
+        if(numJoinedPlayers >= TOTAL_PLAYER_COUNT) game_started = true;
+    }
+
+    if(exit_loop) 
+    {
+        // bummer, handle the timeout
+        return;
+    }
+
+    if(game_started)
+    {
+        // move to the HOST_GAME_LOOP
+    }
 
 }
 
-void STATE_IN_GAME()
+void STATE_JOINING_GAME_HOST()
+{
+
+}
+
+void STATE_IN_GAME_GUEST()
+{
+
+}
+
+void STATE_IN_GAME_HOST()
 {
 
 }
