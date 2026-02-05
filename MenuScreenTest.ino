@@ -4,7 +4,6 @@
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <esp_wifi.h>
-//#include "AsyncUDP.h"
 
 void STATE_HOSTING_GAME();
 void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS();
@@ -31,16 +30,15 @@ uint8_t* draw_buf;
 
 lv_obj_t* screen1; // home screen   [x]
 lv_obj_t* screen2; // settings menu [x]
-lv_obj_t* screen3; // join screen   [ ]
-lv_obj_t* screen4; // host screen   [ ]
+lv_obj_t* screen3; // join screen   [x]
+lv_obj_t* screen4; // host screen   [x]
 lv_obj_t* screen5; // game screen   [ ]
 
 uint8_t baseMAC[6] = { 0, 0, 0, 0, 0, 0 };
-//AsyncUDP udp;
 WiFiUDP udp;
 const uint16_t UDP_PORT = 6969;
 
-#define TOTAL_PLAYER_COUNT 4
+#define TOTAL_PLAYER_COUNT 3
 enum playerGameIDOrder 
 { 
     NOT_PLAYING = 0, 
@@ -57,10 +55,11 @@ enum playerGameIDOrder
 struct PlayerClassStruct
 {
     int playerHealth = 40; // TODO: make starting life total a setting that can change
+    int playerPoison = 0; // just example
     playerGameIDOrder playerId = playerGameIDOrder::NOT_PLAYING;
+    IPAddress HostIPAddress;
 };
 
-//struct __attribute__((packed)) GameStateClassStruct
 struct GameHostStruct
 {
     // host is always player ID #1
@@ -70,16 +69,16 @@ struct GameHostStruct
     playerGameIDOrder Player4_ID = playerGameIDOrder::NOT_PLAYING;  
 
     IPAddress Player1_IP_Address;
-    uint16_t Player1_Port;
+    uint16_t Player1_Port = 0;
 
     IPAddress Player2_IP_Address;
-    uint16_t Player2_Port;
+    uint16_t Player2_Port = 0;
 
     IPAddress Player3_IP_Address;
-    uint16_t Player3_Port;
+    uint16_t Player3_Port = 0;
 
     IPAddress Player4_IP_Address;
-    uint16_t Player4_Port;
+    uint16_t Player4_Port = 0;
 };
 
 struct __attribute__((packed)) GameStateStruct
@@ -412,26 +411,36 @@ void initScreens()
 void loadScreen1()
 {
     lv_screen_load(screen1);
+    lv_refr_now(NULL);
+    delaySafeMilli(5);
 }
 
 void loadScreen2()
 {
     lv_screen_load(screen2);
+    lv_refr_now(NULL);
+    delaySafeMilli(5);
 }
 
 void loadScreen3()
 {
     lv_screen_load(screen3);
+    lv_refr_now(NULL);
+    delaySafeMilli(5);
 }
 
 void loadScreen4()
 {
     lv_screen_load(screen4);
+    lv_refr_now(NULL);
+    delaySafeMilli(5);
 }
 
 void loadScreen5()
 {
     lv_screen_load(screen5);
+    lv_refr_now(NULL);
+    delaySafeMilli(5);
 }
 
 
@@ -519,6 +528,8 @@ void STATE_HOSTING_GAME()
 {
     // TODO: Check if no game name and force them to name game
     const char* ssid = lv_textarea_get_text(taGameName);
+
+    Serial.print("ssid from text area: "); Serial.println(ssid);
     // In order to filter out spurious SSIDs, I am appending
     // the prefix "box" to the user's chosen SSID. I will
     // then filter out all SSIDs found that do not start with "box"
@@ -532,6 +543,7 @@ void STATE_HOSTING_GAME()
     const char* password = "";
 
     disconnectWifi();
+    Serial.print("Starting wifi with SSID "); Serial.println(ssidWithPrefix);
     WiFi.softAP(ssidWithPrefix, password);
 
     udp.begin(UDP_PORT);
@@ -594,7 +606,7 @@ void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char
 {
     WiFi.begin(chosenSSID, password);
     int tryCount = 0;
-    int numTries = 10;
+    int numTries = 100;
     while(WiFi.status() != WL_CONNECTED && tryCount <= numTries)
     {
         delay(100);
@@ -609,7 +621,9 @@ void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char
     }
     else
     {
-        STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST();
+        PlayerClassStruct playerGameData;
+        playerGameData.HostIPAddress = WiFi.gatewayIP();
+        STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(playerGameData);
     }
 }
 
@@ -617,20 +631,103 @@ const char* UDPMSG_DiscoveryMessage = "R2J"; // request to join
 const char* UDPMSG_requestDisconnectMessage = "R2DC"; // request to disconnect
 const char* UDPMSG_acknowledgementMessage = "OK";
 const char* UDPMSG_gameStartingMessage = "GETREADY";
-void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()
+void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameData)
 {
-    PlayerClassStruct playerGameData;
     // guest does a udp.send "R2J"
     // host responds back with PID=(the playerGameIDOrder enumerated value)
+    Serial.println("Inside STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()");
     unsigned long startTime = millis();
     unsigned long timeOut = 60000;
     bool game_started = false;
     bool exit_loop = false;
+    char rxBuffer[128];
     while(!game_started && !exit_loop)
     {
+        Serial.println("Sending to HOST DISCOVERY MESSAGE ");
+        udp.beginPacket(playerGameData.HostIPAddress, UDP_PORT);
+        udp.write((const uint8_t*)UDPMSG_DiscoveryMessage, strlen(UDPMSG_DiscoveryMessage));
+        udp.endPacket();
 
+        // give host some time to respond
+        bool hostTimeout = false;
+        bool hostAcknowledge = false;
+        unsigned long hostStartTime = millis();
+        unsigned long hostTimeToWait = 2000;
+        Serial.println("Waiting for HOST response to DISCOVERY MESSAGE");
+        while(!hostTimeout && !hostAcknowledge)
+        {
+            //Serial.println("Still waiting for host response to DISCOVERY MESSAGE");
+            int packetSize = udp.parsePacket();
+            if(packetSize > 0)
+            {
+                int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+                rxBuffer[len] = '\0';
+                
+                Serial.print("Received data from host: ");
+                Serial.println(rxBuffer);
+
+                if(sizeof(rxBuffer) >= 4 && rxBuffer[0] == 'P' && rxBuffer[1] == 'I' && rxBuffer[2] == 'D' && rxBuffer[3] == '=')
+                {
+                    int playerID = atoi(rxBuffer + 4);
+
+                    Serial.print("Decoded received PID as ");
+                    Serial.println(playerID);
+
+                    if(playerID >= 0 && playerID <= TOTAL_PLAYER_COUNT)
+                    {
+                        playerGameData.playerId = (playerGameIDOrder)playerID;
+                        udp.beginPacket(playerGameData.HostIPAddress, UDP_PORT);
+                        udp.write((const uint8_t*)UDPMSG_acknowledgementMessage, strlen(UDPMSG_acknowledgementMessage));
+                        udp.endPacket();
+
+                        // TODO: print some message on the screen about how we're now connected to the host
+                        // and just waiting for the game to begin
+                        Serial.println("Successfully joined game! Waiting for host to kick off game loop");
+
+                        // give host some time to respond
+                        bool waitForGameStartTimeout = false;
+                        bool gameSuccessfullyStarted = false;
+                        unsigned long waitForGameStartStartTime = millis();
+                        unsigned long waitForGameStartTimeToWait = 300000;
+                        while(!waitForGameStartTimeout && !gameSuccessfullyStarted)
+                        {
+                            int packetSize = udp.parsePacket();
+                            if(packetSize > 0)
+                            {
+                                int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+                                rxBuffer[len] = '\0';
+
+                                if(strcmp(rxBuffer, UDPMSG_gameStartingMessage) == 0)
+                                {
+                                    // WE DID IT!
+                                    gameSuccessfullyStarted = true;
+                                    hostAcknowledge = true;
+                                    exit_loop = true;
+                                    STATE_IN_GAME_GUEST(playerGameData);
+                                }
+                            }
+
+                            if(millis() - waitForGameStartStartTime >= waitForGameStartTimeToWait) waitForGameStartTimeout = true;
+                        }
+
+                        
+                        if(waitForGameStartTimeout)
+                        {
+                            // TODO: Put some kind of game timeout message up on the screen
+                            Serial.println("ERROR waitForGameStartTimeout = true");
+                            exit_loop = true;
+                        }
+                    }   
+                }
+            }
+
+            if(millis() - hostStartTime >= hostTimeToWait) hostTimeout = true;
+        }
 
         if(millis() - startTime >= timeOut) exit_loop = true;
+
+        lv_timer_handler(); /* let the GUI do its work */
+        delaySafeMilli(5); /* let this time pass */
     }
 }
 
@@ -649,9 +746,12 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
     // 5. Once 4 total players have joined the game, the host will move to the HOST_GAME_LOOP
     // 6. Inside the HOST_GAME_LOOP, the host will collect status from each player, update the gamestate struct, and send out the gamestate struct to the guests
 
+    Serial.println("Inside STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()");
+
     GameStateStruct gameStateData;
     GameHostStruct gameHostData;
 
+    gameHostData.Player1_ID = playerGameIDOrder::PLAYER_1;
     gameHostData.Player1_IP_Address = WiFi.localIP();
     gameHostData.Player1_Port = UDP_PORT;
 
@@ -661,11 +761,13 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
     unsigned long timeOut = 120000;
     int numJoinedPlayers = 1; // host counts as 1 player
     char rxBuffer[128];
+    Serial.println("Entering main while loop for HOST NEGOTIATING WITH GUESTS state");
     while(!game_started && !exit_loop)
     {
         int packetSize = udp.parsePacket();
         if(packetSize > 0)
         {            
+            Serial.println("Packet receieved");
             IPAddress senderIP = udp.remoteIP();
             uint16_t senderPort = udp.remotePort();
 
@@ -673,18 +775,19 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
             rxBuffer[len] = '\0';
             // buffer is now effectively a string with a null terminator
             // negotiation packets will essentially be string-based
-            Serial.print("HOST_NEGOTIATING: Recieved packet [");
-            Serial.print(rxBuffer);
-            Serial.println("]");
 
             if(strcmp(rxBuffer, UDPMSG_DiscoveryMessage) == 0)
             {
+                Serial.println("RECEIVED A DISCOVERY MESSAGE");
                 // a new guest is attempting to join
                 int playerNum = numJoinedPlayers + 1;
                 String responseMsg = "PID=";
                 responseMsg += playerNum;
 
                 // send the player back their ID and give them 2 seconds to ack
+                Serial.print("SENDING PLAYER THEIR PID (");
+                Serial.print(responseMsg.c_str());
+                Serial.println(")");
                 udp.beginPacket(senderIP, senderPort);
                 udp.write((const uint8_t*)responseMsg.c_str(), strlen(responseMsg.c_str()));
                 udp.endPacket();
@@ -694,28 +797,35 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
                 bool newPlayerTimeout = false;
                 unsigned long newPlayerTimeToWait = 2000;
                 unsigned long newPlayerStartTime = millis();
-                while(!receivedAck || !newPlayerTimeout)
+                while(!receivedAck && !newPlayerTimeout)
                 {
                     int packetSize = udp.parsePacket();
                     if(packetSize > 0)
                     {
+                        int len1 = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+                        rxBuffer[len1] = '\0';
+
                         if(strcmp(rxBuffer, UDPMSG_acknowledgementMessage) == 0)
                         {
+                            Serial.println("Player acknowledged their PID!");
                             receivedAck = true;
                         }
                     }
-                    if(millis() - newPlayerStartTime >= newPlayerTimeout) newPlayerTimeout = true;
+                    if((millis() - newPlayerStartTime) >= newPlayerTimeToWait) newPlayerTimeout = true;
                     delaySafeMilli(50);
                 }
 
                 if(newPlayerTimeout)
                 {
                     // guest did not respond with ACK, maybe show an error message on the hosting screen
+                    Serial.println("new player joining timed out");
                 }
                 else if(receivedAck)
                 {
                     numJoinedPlayers++;
-                    
+                    Serial.print("Received acknowledgement from player"); 
+                    Serial.println(numJoinedPlayers);
+
                     // TODO: someday be a better coder and move this all to arrays so I can use loops
                     if(numJoinedPlayers == 2)
                     {
@@ -736,6 +846,10 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
                         gameHostData.Player4_Port = senderPort;
                     }
                 }
+                else if(newPlayerTimeout)
+                {
+
+                }
             }
             else if(strcmp(rxBuffer, UDPMSG_requestDisconnectMessage) == 0)
             {
@@ -747,6 +861,9 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
         if(millis() - startTime >= timeOut) exit_loop = true;
 
         if(numJoinedPlayers >= TOTAL_PLAYER_COUNT) game_started = true;
+
+        lv_timer_handler(); /* let the GUI do its work */
+        delaySafeMilli(5); /* let this time pass */
     }
 
     if(exit_loop) 
@@ -788,23 +905,59 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 
 }
 
-void STATE_JOINING_GAME_HOST()
-{
-
-}
-
 void STATE_IN_GAME_GUEST(PlayerClassStruct playerGameData)
 {
+    GameStateStruct gameState;
+
+    Serial.println("I have made it into the STATE_IN_GAME_GUEST function");
+    Serial.print("My player ID was ");
+    Serial.println((int)playerGameData.playerId);
+
+    // TODO: first, create the screen and assign different players to the different labels
+    // start a while loop that does 3 things:
+    // 1. receives the gamestate struct from the host and updates its own gamestate variable
+    // 2. 1-4 times per second sends its health (and poison and stuff?) back to the host
+    // 3. 
 
 }
 
 void STATE_IN_GAME_HOST(GameHostStruct gameHostData)
 {
+    GameStateStruct gameState;
+    
+    Serial.println("I have made it into the STATE_IN_GAME_HOST function");
+    Serial.print("Player 1 Info: ");
+    Serial.print(gameHostData.Player1_ID);
+    Serial.print(", ");
+    Serial.print(gameHostData.Player1_IP_Address);
+    Serial.print(", ");
+    Serial.println(gameHostData.Player1_Port);
+
+    Serial.print("Player 2 Info: ");
+    Serial.print(gameHostData.Player2_ID);
+    Serial.print(", ");
+    Serial.print(gameHostData.Player2_IP_Address);
+    Serial.print(", ");
+    Serial.println(gameHostData.Player2_Port);
+
+    Serial.print("Player 3 Info: ");
+    Serial.print(gameHostData.Player3_ID);
+    Serial.print(", ");
+    Serial.print(gameHostData.Player3_IP_Address);
+    Serial.print(", ");
+    Serial.println(gameHostData.Player3_Port);
+
+    Serial.print("Player 4 Info: ");
+    Serial.print(gameHostData.Player4_ID);
+    Serial.print(", ");
+    Serial.print(gameHostData.Player4_IP_Address);
+    Serial.print(", ");
+    Serial.println(gameHostData.Player4_Port);
 
 }
 
 void loop()
 {
     lv_timer_handler(); /* let the GUI do its work */
-    delay(5); /* let this time pass */
+    delaySafeMilli(5); /* let this time pass */
 }
