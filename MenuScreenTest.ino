@@ -94,7 +94,7 @@ struct __attribute__((packed)) GameStateStruct
     // 3. other permanent statuses like poison
 };
 
-// control that need to be globally available:
+// controls that need to be globally available:
 lv_obj_t* taGameName;
 lv_obj_t * availableSSIDList;
 
@@ -124,16 +124,17 @@ void readMacAddress()
     esp_err_t ret = esp_wifi_get_mac(WIFI_IF_STA, baseMAC);
 }
 
-String mac2String() {
-  String s;
-  for (byte i = 0; i < 6; ++i)
-  {
-    char buf[3];
-    sprintf(buf, "%02X", baseMAC[i]);
-    s += buf;
-    if (i < 5) s += ':';
-  }
-  return s;
+String mac2String() 
+{
+    String s;
+    for (byte i = 0; i < 6; ++i)
+    {
+        char buf[3];
+        sprintf(buf, "%02X", baseMAC[i]);
+        s += buf;
+        if (i < 5) s += ':';
+    }
+    return s;
 }
 
 // O=======================================================================O
@@ -151,7 +152,7 @@ static void ssid_listbox_event_handler(lv_event_t *e)
     LV_UNUSED(obj);
     if(code == LV_EVENT_CLICKED) 
     {
-        //Serial.print("Clicked: "); Serial.println(lv_list_get_button_text(availableSSIDList, obj));
+        // TODO: Password handling
         STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(lv_list_get_button_text(availableSSIDList, obj), "");
     }
 }
@@ -238,8 +239,16 @@ static void btn_event_screenExitToHomeButton_cb(lv_event_t* e)
     }
 }
 
+// O=======================================================================O
+// |                                                                       |
+// |                             SCREEN INITIALIZATIONS                    |
+// |                                                                       |
+// O=======================================================================O
 
-void initScreen1() // home screen
+// O-----------------------------------------------------------------------O
+// | SCREEN 1 - HOME SCREEN
+// O-----------------------------------------------------------------------O
+void initScreen1()
 {
     screen1 = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen1, lv_color_hex(0x0000ff), LV_PART_MAIN);
@@ -291,7 +300,10 @@ void initScreen1() // home screen
     lv_obj_center(btnSettingsLabel);
 }
 
-void initScreen2() // settings screen
+// O-----------------------------------------------------------------------O
+// | SCREEN 2 - SETTINGS SCREEN
+// O-----------------------------------------------------------------------O
+void initScreen2()
 {
     screen2 = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(screen2, lv_color_hex(0xff0000), LV_PART_MAIN);
@@ -341,6 +353,9 @@ void initScreen2() // settings screen
     lv_obj_add_flag(kbGameName, LV_OBJ_FLAG_HIDDEN);
 }
 
+// O-----------------------------------------------------------------------O
+// | SCREEN 3 - JOIN GAME SCREEN
+// O-----------------------------------------------------------------------O
 void initScreen3() // join game screen
 {
     screen3 = lv_obj_create(NULL);
@@ -367,6 +382,9 @@ void initScreen3() // join game screen
     lv_obj_center(btnExitSettingsLabel);
 }
 
+// O-----------------------------------------------------------------------O
+// | SCREEN 4 - HOST GAME SCREEN
+// O-----------------------------------------------------------------------O
 void initScreen4() // host game screen
 {
     screen4 = lv_obj_create(NULL);
@@ -393,6 +411,9 @@ void initScreen4() // host game screen
     lv_obj_center(btnExitSettingsLabel);
 }
 
+// O-----------------------------------------------------------------------O
+// | SCREEN 5 - IN-GAME SCREEN (Playfield/Table)
+// O-----------------------------------------------------------------------O
 void initScreen5() // in-game screen
 {
     screen5 = lv_obj_create(NULL);
@@ -411,7 +432,7 @@ void initScreens()
 void loadScreen1()
 {
     lv_screen_load(screen1);
-    lv_refr_now(NULL);
+    lv_refr_now(NULL); // i guess not a good way?
     delaySafeMilli(5);
 }
 
@@ -500,7 +521,7 @@ void setup()
 
     /*Initialize the (dummy) input device driver*/
     lv_indev_t * indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER); /*Touchpad should have POINTER type*/
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_pointer_read);
 
     initScreens(); // create all screens
@@ -516,8 +537,6 @@ void setup()
 // |                       GAME STATES                                     |
 // |                                                                       |
 // O=======================================================================O
-
-//const char* prefix = "box";
 
 bool ssidStartsWithPrefix(const char* s)
 {
@@ -566,8 +585,6 @@ void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
 
     if(boxSsids == 0)
     {
-        // Error message to show the user that no boxes could
-        // be detected in the vicinity
         lv_obj_t* errorLabel = lv_label_create(lv_screen_active());
         lv_label_set_text(errorLabel, "Oh no! No other boxes detected! Try re-scan");
         lv_obj_set_style_text_color(lv_screen_active(), lv_color_hex(0xffffff), LV_PART_MAIN);
@@ -588,7 +605,6 @@ void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
         }
     }
 
-    //lv_obj_t * availableSSIDList; // moved to global
     availableSSIDList = lv_list_create(lv_screen_active());
     lv_obj_set_pos(availableSSIDList, 10, 25);
     lv_obj_set_size(availableSSIDList, 300, 160);
@@ -600,13 +616,12 @@ void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
     }
 }
 
-// SSID has been chosen, now connect to host
-// and establish player ID 
+// SSID has been chosen, now connect to host and establish player ID 
 void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char* password)
 {
     WiFi.begin(chosenSSID, password);
     int tryCount = 0;
-    int numTries = 100;
+    int numTries = 50;
     while(WiFi.status() != WL_CONNECTED && tryCount <= numTries)
     {
         delay(100);
@@ -635,6 +650,7 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
 {
     // guest does a udp.send "R2J"
     // host responds back with PID=(the playerGameIDOrder enumerated value)
+    // guest acknowledges and waits for game start message
     Serial.println("Inside STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()");
     unsigned long startTime = millis();
     unsigned long timeOut = 60000;
@@ -656,15 +672,11 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
         Serial.println("Waiting for HOST response to DISCOVERY MESSAGE");
         while(!hostTimeout && !hostAcknowledge)
         {
-            //Serial.println("Still waiting for host response to DISCOVERY MESSAGE");
             int packetSize = udp.parsePacket();
             if(packetSize > 0)
             {
                 int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
                 rxBuffer[len] = '\0';
-                
-                Serial.print("Received data from host: ");
-                Serial.println(rxBuffer);
 
                 if(sizeof(rxBuffer) >= 4 && rxBuffer[0] == 'P' && rxBuffer[1] == 'I' && rxBuffer[2] == 'D' && rxBuffer[3] == '=')
                 {
@@ -684,7 +696,8 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
                         // and just waiting for the game to begin
                         Serial.println("Successfully joined game! Waiting for host to kick off game loop");
 
-                        // give host some time to respond
+                        // give host some time to respond, right now game won't start until all players are
+                        // connected and acknowledged
                         bool waitForGameStartTimeout = false;
                         bool gameSuccessfullyStarted = false;
                         unsigned long waitForGameStartStartTime = millis();
@@ -702,15 +715,17 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
                                     // WE DID IT!
                                     gameSuccessfullyStarted = true;
                                     hostAcknowledge = true;
-                                    exit_loop = true;
-                                    STATE_IN_GAME_GUEST(playerGameData);
+                                    game_started = true;
                                 }
                             }
 
-                            if(millis() - waitForGameStartStartTime >= waitForGameStartTimeToWait) waitForGameStartTimeout = true;
+                            if(millis() - waitForGameStartStartTime >= waitForGameStartTimeToWait)
+                            {
+                                waitForGameStartTimeout = true;
+                                hostTimeout = true;
+                            }    
                         }
 
-                        
                         if(waitForGameStartTimeout)
                         {
                             // TODO: Put some kind of game timeout message up on the screen
@@ -729,23 +744,19 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
         lv_timer_handler(); /* let the GUI do its work */
         delaySafeMilli(5); /* let this time pass */
     }
+
+    if(game_started)
+    {
+        STATE_IN_GAME_GUEST(playerGameData);
+    }
+    else if(exit_loop)
+    {
+        // something bad happened
+    }
 }
 
 void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 {
-    // to get a senders IP address and port:
-    
-
-    // TODO: Invent some kind of "hello" discovery packet (started above with helloDiscoveryMessage)
-    // 1. The host sits and waits in a loop, ready to parse any packets it receives. First it checks if a message is a known size, if not it tries to parse it as a string
-    // 2. The guest, once connected to the SSID, immediately sends the host a helloDiscoveryMessage (maybe in a loop sending it multiple times)
-    // 3. The host grabs the guest's IPAddress and Port and assigns the player a sequentially-chosen player ID (from the enum... up to 8 players) 
-    // -----> The host is keeping a count of total joined players at this time
-    // -----> The host will always be PLAYER_1
-    // 4. Once the guest has been assigned its player ID, it moves to the GUEST_GAME_LOOP where it will send its life total to the host periodically 
-    // 5. Once 4 total players have joined the game, the host will move to the HOST_GAME_LOOP
-    // 6. Inside the HOST_GAME_LOOP, the host will collect status from each player, update the gamestate struct, and send out the gamestate struct to the guests
-
     Serial.println("Inside STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()");
 
     GameStateStruct gameStateData;
@@ -815,12 +826,7 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
                     delaySafeMilli(50);
                 }
 
-                if(newPlayerTimeout)
-                {
-                    // guest did not respond with ACK, maybe show an error message on the hosting screen
-                    Serial.println("new player joining timed out");
-                }
-                else if(receivedAck)
+                if(receivedAck)
                 {
                     numJoinedPlayers++;
                     Serial.print("Received acknowledgement from player"); 
@@ -848,7 +854,8 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
                 }
                 else if(newPlayerTimeout)
                 {
-
+                    // guest did not respond with ACK, maybe show an error message on the hosting screen
+                    Serial.println("new player joining timed out");
                 }
             }
             else if(strcmp(rxBuffer, UDPMSG_requestDisconnectMessage) == 0)
