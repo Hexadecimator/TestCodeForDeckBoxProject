@@ -5,11 +5,19 @@
 #include <WiFiUdp.h>
 #include <esp_wifi.h>
 
+
+// O-----------------------------------------------------------------------O
+// | Sloppy function instantiations
+// O-----------------------------------------------------------------------O
 void STATE_HOSTING_GAME();
 void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS();
 void STATE_IN_GAME_GUEST();
 void STATE_IN_GAME_HOST();
 
+
+// O-----------------------------------------------------------------------O
+// | Screen related variables
+// O-----------------------------------------------------------------------O
 #define XPT2046_IRQ 36   // T_IRQ
 #define XPT2046_MOSI 32  // T_DIN
 #define XPT2046_MISO 39  // T_OUT
@@ -34,11 +42,37 @@ lv_obj_t* screen3; // join screen   [x]
 lv_obj_t* screen4; // host screen   [x]
 lv_obj_t* screen5; // game screen   [ ]
 
+// Screen controls that need to be globally available:
+lv_obj_t* taGameName;
+lv_obj_t * availableSSIDList;
+
+lv_obj_t* sc5Player1HealthValueLabel;
+lv_obj_t* sc5Player2HealthValueLabel;
+lv_obj_t* sc5Player3HealthValueLabel;
+lv_obj_t* sc5Player4HealthValueLabel;
+
+// O-----------------------------------------------------------------------O
+// | WiFi related variables
+// O-----------------------------------------------------------------------O
 uint8_t baseMAC[6] = { 0, 0, 0, 0, 0, 0 };
 WiFiUDP udp;
 const uint16_t UDP_PORT = 6969;
+IPAddress resetAddress(0, 0, 0, 0);
 
-#define TOTAL_PLAYER_COUNT 3
+
+// O-----------------------------------------------------------------------O
+// | Game state related variables
+// O-----------------------------------------------------------------------O
+#define TOTAL_PLAYER_COUNT 2
+
+int startingLifeTotal = 40;
+
+bool IN_GAME_GUEST = false;
+bool IN_GAME_HOST = false;
+
+bool decreaseHealthButtonClicked = false;
+bool increaseHealthButtonClicked = false;
+
 enum playerGameIDOrder 
 { 
     NOT_PLAYING = 0, 
@@ -54,7 +88,7 @@ enum playerGameIDOrder
 
 struct PlayerClassStruct
 {
-    int playerHealth = 40; // TODO: make starting life total a setting that can change
+    int playerHealth = startingLifeTotal;
     int playerPoison = 0; // just example
     playerGameIDOrder playerId = playerGameIDOrder::NOT_PLAYING;
     IPAddress HostIPAddress;
@@ -83,10 +117,10 @@ struct GameHostStruct
 
 struct __attribute__((packed)) GameStateStruct
 {
-    int player1_Health = 40;
-    int player2_Health = 40;
-    int player3_Health = 40;
-    int player4_Health = 40;
+    int player1_Health = startingLifeTotal;
+    int player2_Health = startingLifeTotal;
+    int player3_Health = startingLifeTotal;
+    int player4_Health = startingLifeTotal;
 
     // what else?
     // 1. turn order? but they'd have to remember to pass turn on the device that's not happening
@@ -94,15 +128,58 @@ struct __attribute__((packed)) GameStateStruct
     // 3. other permanent statuses like poison
 };
 
-// controls that need to be globally available:
-lv_obj_t* taGameName;
-lv_obj_t * availableSSIDList;
+// Persistent Game State Data
+PlayerClassStruct GSD_PlayerDataStruct;
+GameHostStruct    GSD_HostGameStruct;
+GameStateStruct   GSD_GameStateStruct;
+
 
 // O=======================================================================O
 // |                                                                       |
 // |                             USEFUL FUNCTIONS                          |
 // |                                                                       |
 // O=======================================================================O
+
+void reset_GSD_PlayerDataStruct()
+{
+    GSD_PlayerDataStruct.playerHealth = startingLifeTotal;
+    GSD_PlayerDataStruct.playerPoison = 0;
+    GSD_PlayerDataStruct.playerId = playerGameIDOrder::NOT_PLAYING;
+    GSD_PlayerDataStruct.HostIPAddress = resetAddress;
+}
+
+void reset_GSD_HostGameStruct()
+{
+    GSD_HostGameStruct.Player1_ID = playerGameIDOrder::NOT_PLAYING;
+    GSD_HostGameStruct.Player2_ID = playerGameIDOrder::NOT_PLAYING;
+    GSD_HostGameStruct.Player3_ID = playerGameIDOrder::NOT_PLAYING;
+    GSD_HostGameStruct.Player4_ID = playerGameIDOrder::NOT_PLAYING;
+
+    GSD_HostGameStruct.Player1_IP_Address = resetAddress;
+    GSD_HostGameStruct.Player2_IP_Address = resetAddress;
+    GSD_HostGameStruct.Player3_IP_Address = resetAddress;
+    GSD_HostGameStruct.Player4_IP_Address = resetAddress;
+
+    GSD_HostGameStruct.Player1_Port = 0;
+    GSD_HostGameStruct.Player2_Port = 0;
+    GSD_HostGameStruct.Player3_Port = 0;
+    GSD_HostGameStruct.Player4_Port = 0;
+}
+
+void reset_GSD_GameStateStruct()
+{
+    GSD_GameStateStruct.player1_Health = startingLifeTotal;
+    GSD_GameStateStruct.player2_Health = startingLifeTotal;
+    GSD_GameStateStruct.player3_Health = startingLifeTotal;
+    GSD_GameStateStruct.player4_Health = startingLifeTotal;
+}
+
+void resetAllGameStateStructs()
+{
+    reset_GSD_PlayerDataStruct();
+    reset_GSD_HostGameStruct();
+    reset_GSD_GameStateStruct();
+}
 
 void delaySafeMilli(unsigned long timeToWait)
 {
@@ -236,6 +313,30 @@ static void btn_event_screenExitToHomeButton_cb(lv_event_t* e)
     {
         disconnectWifi();
         loadScreen1();
+    }
+}
+
+
+// O-----------------------------------------------------------------------O
+// | GAME SCREEN (5) BUTTON EVENTS
+// O-----------------------------------------------------------------------O
+static void btn_event_screen5DecreaseHealthButton_cb(lv_event_t* e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t* btn = lv_event_get_target_obj(e);
+    if(code == LV_EVENT_CLICKED)
+    {
+        decreaseHealthButtonClicked = true;
+    }
+}
+
+static void btn_event_screen5IncreaseHealthButton_cb(lv_event_t* e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t* btn = lv_event_get_target_obj(e);
+    if(code == LV_EVENT_CLICKED)
+    {
+        increaseHealthButtonClicked = true;
     }
 }
 
@@ -417,7 +518,93 @@ void initScreen4() // host game screen
 void initScreen5() // in-game screen
 {
     screen5 = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(screen5, lv_color_hex(0x00ff00), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(screen5, lv_color_hex(0x000000), LV_PART_MAIN);
+
+    // O-----------------------------------------------------------------------O
+    // | Header label
+    // O-----------------------------------------------------------------------O
+    lv_obj_t* sc5HeaderLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5HeaderLabel, " - In-Game Screen - ");
+    lv_obj_set_style_text_color(screen5, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_align(sc5HeaderLabel, LV_ALIGN_TOP_MID, 0, 0);
+
+    // O-----------------------------------------------------------------------O
+    // | Player 1 Health Label
+    // O-----------------------------------------------------------------------O
+    // Label
+    lv_obj_t* sc5Player1HealthLabelLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player1HealthLabelLabel, "Player 1: ");
+    lv_obj_set_pos(sc5Player1HealthLabelLabel, 20, 45);
+
+    // Value
+    sc5Player1HealthValueLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player1HealthValueLabel, "??");
+    lv_obj_set_pos(sc5Player1HealthValueLabel, 100, 45);
+
+    // O-----------------------------------------------------------------------O
+    // | Player 2 Health Label
+    // O-----------------------------------------------------------------------O
+    // Label
+    lv_obj_t* sc5Player2HealthLabelLabel = lv_label_create(screen5);       
+    lv_label_set_text(sc5Player2HealthLabelLabel, "Player 2: ");
+    lv_obj_set_pos(sc5Player2HealthLabelLabel, 180, 45);
+
+    // Value
+    sc5Player2HealthValueLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player2HealthValueLabel, "??");
+    lv_obj_set_pos(sc5Player2HealthValueLabel, 260, 45);
+
+    // O-----------------------------------------------------------------------O
+    // | Player 3 Health Label
+    // O-----------------------------------------------------------------------O
+    // Label
+    lv_obj_t* sc5Player3HealthLabelLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player3HealthLabelLabel, "Player 3: ");
+    lv_obj_set_pos(sc5Player3HealthLabelLabel, 20, 85);
+
+    // Value
+    sc5Player3HealthValueLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player3HealthValueLabel, "??");
+    lv_obj_set_pos(sc5Player3HealthValueLabel, 100, 85);
+
+    // O-----------------------------------------------------------------------O
+    // | Player 4 Health Label
+    // O-----------------------------------------------------------------------O
+    // Label
+    lv_obj_t* sc5Player4HealthLabelLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player4HealthLabelLabel, "Player 4: ");
+    lv_obj_set_pos(sc5Player4HealthLabelLabel, 180, 85);
+
+    // Value
+    sc5Player4HealthValueLabel = lv_label_create(screen5);
+    lv_label_set_text(sc5Player4HealthValueLabel, "??");
+    lv_obj_set_pos(sc5Player4HealthValueLabel, 260, 85);
+
+    int btnXSize = 90;
+    int btnYSize = 60;
+    // O-----------------------------------------------------------------------O
+    // | Decrease Health Value Button
+    // O-----------------------------------------------------------------------O
+    lv_obj_t* btnDecreaseHealthValue = lv_button_create(screen5);
+    lv_obj_set_pos(btnDecreaseHealthValue, 10, 155);
+    lv_obj_set_size(btnDecreaseHealthValue, btnXSize, btnYSize);
+    lv_obj_add_event_cb(btnDecreaseHealthValue, btn_event_screen5DecreaseHealthButton_cb, LV_EVENT_ALL, NULL);
+
+    lv_obj_t* btnDecreaseHealthLabel = lv_label_create(btnDecreaseHealthValue);
+    lv_label_set_text(btnDecreaseHealthLabel, "V");
+    lv_obj_center(btnDecreaseHealthLabel);
+
+    // O-----------------------------------------------------------------------O
+    // | Increase Health Value Button
+    // O-----------------------------------------------------------------------O
+    lv_obj_t* btnIncreaseHealthValue = lv_button_create(screen5);
+    lv_obj_set_pos(btnIncreaseHealthValue, 220, 155);
+    lv_obj_set_size(btnIncreaseHealthValue, btnXSize, btnYSize);
+    lv_obj_add_event_cb(btnIncreaseHealthValue, btn_event_screen5IncreaseHealthButton_cb, LV_EVENT_ALL, NULL);
+
+    lv_obj_t* btnIncreaseHealthLabel = lv_label_create(btnIncreaseHealthValue);
+    lv_label_set_text(btnIncreaseHealthLabel, "/\\");
+    lv_obj_center(btnIncreaseHealthLabel);
 }
 
 void initScreens()
@@ -493,6 +680,12 @@ static uint32_t my_tick(void)
     return millis();
 }
 
+
+// O=======================================================================O
+// |                                                                       |
+// |                             **** SETUP ****                           |
+// |                                                                       |
+// O=======================================================================O
 void setup()
 {
     String LVGL_Arduino = "Hello Arduino! ";
@@ -524,12 +717,13 @@ void setup()
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_pointer_read);
 
+    resetAllGameStateStructs();
+
     initScreens(); // create all screens
     loadScreen1(); // load home screen
 
     Serial.println( "Setup done, entering loop" );
 }
-
 
 
 // O=======================================================================O
@@ -545,6 +739,9 @@ bool ssidStartsWithPrefix(const char* s)
 
 void STATE_HOSTING_GAME()
 {
+    // reset all previous game data get ready for new game
+    resetAllGameStateStructs();
+
     // TODO: Check if no game name and force them to name game
     const char* ssid = lv_textarea_get_text(taGameName);
 
@@ -575,6 +772,9 @@ void STATE_HOSTING_GAME()
 // TO CONNECT TO THE SSID AND START THE GAME LOOP
 void STATE_JOINING_GAME_LOOK_FOR_VALID_SSIDS()
 {
+    // reset all previous game data get ready for new game
+    resetAllGameStateStructs();
+
     disconnectWifi();
     int n = WiFi.scanNetworks();
     int boxSsids = 0;
@@ -636,9 +836,8 @@ void STATE_JOINING_GAME_CONNECT_TO_SSID_GUEST(const char* chosenSSID, const char
     }
     else
     {
-        PlayerClassStruct playerGameData;
-        playerGameData.HostIPAddress = WiFi.gatewayIP();
-        STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(playerGameData);
+        GSD_PlayerDataStruct.HostIPAddress = WiFi.gatewayIP();
+        STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST();
     }
 }
 
@@ -646,7 +845,7 @@ const char* UDPMSG_DiscoveryMessage = "R2J"; // request to join
 const char* UDPMSG_requestDisconnectMessage = "R2DC"; // request to disconnect
 const char* UDPMSG_acknowledgementMessage = "OK";
 const char* UDPMSG_gameStartingMessage = "GETREADY";
-void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameData)
+void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST()
 {
     // guest does a udp.send "R2J"
     // host responds back with PID=(the playerGameIDOrder enumerated value)
@@ -660,7 +859,7 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
     while(!game_started && !exit_loop)
     {
         Serial.println("Sending to HOST DISCOVERY MESSAGE ");
-        udp.beginPacket(playerGameData.HostIPAddress, UDP_PORT);
+        udp.beginPacket(GSD_PlayerDataStruct.HostIPAddress, UDP_PORT);
         udp.write((const uint8_t*)UDPMSG_DiscoveryMessage, strlen(UDPMSG_DiscoveryMessage));
         udp.endPacket();
 
@@ -687,8 +886,8 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
 
                     if(playerID >= 0 && playerID <= TOTAL_PLAYER_COUNT)
                     {
-                        playerGameData.playerId = (playerGameIDOrder)playerID;
-                        udp.beginPacket(playerGameData.HostIPAddress, UDP_PORT);
+                        GSD_PlayerDataStruct.playerId = (playerGameIDOrder)playerID;
+                        udp.beginPacket(GSD_PlayerDataStruct.HostIPAddress, UDP_PORT);
                         udp.write((const uint8_t*)UDPMSG_acknowledgementMessage, strlen(UDPMSG_acknowledgementMessage));
                         udp.endPacket();
 
@@ -747,7 +946,9 @@ void STATE_JOINING_GAME_GUEST_NEGOTIATE_WITH_HOST(PlayerClassStruct playerGameDa
 
     if(game_started)
     {
-        STATE_IN_GAME_GUEST(playerGameData);
+        //STATE_IN_GAME_GUEST();
+        IN_GAME_GUEST = true;
+        loadScreen5();
     }
     else if(exit_loop)
     {
@@ -759,12 +960,9 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 {
     Serial.println("Inside STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()");
 
-    GameStateStruct gameStateData;
-    GameHostStruct gameHostData;
-
-    gameHostData.Player1_ID = playerGameIDOrder::PLAYER_1;
-    gameHostData.Player1_IP_Address = WiFi.localIP();
-    gameHostData.Player1_Port = UDP_PORT;
+    GSD_HostGameStruct.Player1_ID = playerGameIDOrder::PLAYER_1;
+    GSD_HostGameStruct.Player1_IP_Address = WiFi.localIP();
+    GSD_HostGameStruct.Player1_Port = UDP_PORT;
 
     bool exit_loop = false;
     bool game_started = false;
@@ -835,21 +1033,21 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
                     // TODO: someday be a better coder and move this all to arrays so I can use loops
                     if(numJoinedPlayers == 2)
                     {
-                        gameHostData.Player2_ID = (playerGameIDOrder)numJoinedPlayers;
-                        gameHostData.Player2_IP_Address = senderIP;
-                        gameHostData.Player2_Port = senderPort;
+                        GSD_HostGameStruct.Player2_ID = (playerGameIDOrder)numJoinedPlayers;
+                        GSD_HostGameStruct.Player2_IP_Address = senderIP;
+                        GSD_HostGameStruct.Player2_Port = senderPort;
                     }
                     else if(numJoinedPlayers == 3)
                     {
-                        gameHostData.Player3_ID = (playerGameIDOrder)numJoinedPlayers;
-                        gameHostData.Player3_IP_Address = senderIP;
-                        gameHostData.Player3_Port = senderPort;
+                        GSD_HostGameStruct.Player3_ID = (playerGameIDOrder)numJoinedPlayers;
+                        GSD_HostGameStruct.Player3_IP_Address = senderIP;
+                        GSD_HostGameStruct.Player3_Port = senderPort;
                     }
                     else if(numJoinedPlayers == 4)
                     {
-                        gameHostData.Player4_ID = (playerGameIDOrder)numJoinedPlayers;
-                        gameHostData.Player4_IP_Address = senderIP;
-                        gameHostData.Player4_Port = senderPort;
+                        GSD_HostGameStruct.Player4_ID = (playerGameIDOrder)numJoinedPlayers;
+                        GSD_HostGameStruct.Player4_IP_Address = senderIP;
+                        GSD_HostGameStruct.Player4_Port = senderPort;
                     }
                 }
                 else if(newPlayerTimeout)
@@ -887,38 +1085,55 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
         // TODO: someday be a better coder and move this all to arrays so I can use loops
 
         // tell player 2 to move to the game loop
-        udp.beginPacket(gameHostData.Player2_IP_Address, gameHostData.Player2_Port);
+        udp.beginPacket(GSD_HostGameStruct.Player2_IP_Address, GSD_HostGameStruct.Player2_Port);
         udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
         udp.endPacket();
 
         delaySafeMilli(100);
 
         // tell player 3 to move to the game loop
-        udp.beginPacket(gameHostData.Player3_IP_Address, gameHostData.Player3_Port);
+        udp.beginPacket(GSD_HostGameStruct.Player3_IP_Address, GSD_HostGameStruct.Player3_Port);
         udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
         udp.endPacket();
 
         delaySafeMilli(100);
 
         // tell player 4 to move to the game loop
-        udp.beginPacket(gameHostData.Player4_IP_Address, gameHostData.Player4_Port);
+        udp.beginPacket(GSD_HostGameStruct.Player4_IP_Address, GSD_HostGameStruct.Player4_Port);
         udp.write((const uint8_t*)UDPMSG_gameStartingMessage, strlen(UDPMSG_gameStartingMessage));
         udp.endPacket();
 
         delaySafeMilli(100);
 
-        STATE_IN_GAME_HOST(gameHostData);
+        
+        //STATE_IN_GAME_HOST();
+        IN_GAME_HOST = true;
+        loadScreen5();
     }
 
 }
 
-void STATE_IN_GAME_GUEST(PlayerClassStruct playerGameData)
+void STATE_IN_GAME_GUEST()
 {
+    if(increaseHealthButtonClicked)
+    {
+        // TODO: increment player health in GSD_PlayerDataStruct
+        Serial.println("INCREASE HEALTH");
+        increaseHealthButtonClicked = false;
+    }
+
+    if(decreaseHealthButtonClicked)
+    {
+        // TODO: decrement player health
+        Serial.println("DECREASE HEALTH");
+        decreaseHealthButtonClicked = false;
+    }
+
     GameStateStruct gameState;
 
     Serial.println("I have made it into the STATE_IN_GAME_GUEST function");
     Serial.print("My player ID was ");
-    Serial.println((int)playerGameData.playerId);
+    Serial.println((int)GSD_PlayerDataStruct.playerId);
 
     // TODO: first, create the screen and assign different players to the different labels
     // start a while loop that does 3 things:
@@ -928,43 +1143,66 @@ void STATE_IN_GAME_GUEST(PlayerClassStruct playerGameData)
 
 }
 
-void STATE_IN_GAME_HOST(GameHostStruct gameHostData)
-{
-    GameStateStruct gameState;
-    
+void STATE_IN_GAME_HOST()
+{   
+    if(increaseHealthButtonClicked)
+    {
+        // TODO: increment player 1 health
+        Serial.println("INCREASE HEALTH");
+        increaseHealthButtonClicked = false;
+    }
+
+    if(decreaseHealthButtonClicked)
+    {
+        // TODO: decrement player 1 health
+        Serial.println("DECREASE HEALTH");
+        decreaseHealthButtonClicked = false;
+    }
+
+/*
     Serial.println("I have made it into the STATE_IN_GAME_HOST function");
     Serial.print("Player 1 Info: ");
-    Serial.print(gameHostData.Player1_ID);
+    Serial.print(GSD_HostGameStruct.Player1_ID);
     Serial.print(", ");
-    Serial.print(gameHostData.Player1_IP_Address);
+    Serial.print(GSD_HostGameStruct.Player1_IP_Address);
     Serial.print(", ");
-    Serial.println(gameHostData.Player1_Port);
+    Serial.println(GSD_HostGameStruct.Player1_Port);
 
     Serial.print("Player 2 Info: ");
-    Serial.print(gameHostData.Player2_ID);
+    Serial.print(GSD_HostGameStruct.Player2_ID);
     Serial.print(", ");
-    Serial.print(gameHostData.Player2_IP_Address);
+    Serial.print(GSD_HostGameStruct.Player2_IP_Address);
     Serial.print(", ");
-    Serial.println(gameHostData.Player2_Port);
+    Serial.println(GSD_HostGameStruct.Player2_Port);
 
     Serial.print("Player 3 Info: ");
-    Serial.print(gameHostData.Player3_ID);
+    Serial.print(GSD_HostGameStruct.Player3_ID);
     Serial.print(", ");
-    Serial.print(gameHostData.Player3_IP_Address);
+    Serial.print(GSD_HostGameStruct.Player3_IP_Address);
     Serial.print(", ");
-    Serial.println(gameHostData.Player3_Port);
+    Serial.println(GSD_HostGameStruct.Player3_Port);
 
     Serial.print("Player 4 Info: ");
-    Serial.print(gameHostData.Player4_ID);
+    Serial.print(GSD_HostGameStruct.Player4_ID);
     Serial.print(", ");
-    Serial.print(gameHostData.Player4_IP_Address);
+    Serial.print(GSD_HostGameStruct.Player4_IP_Address);
     Serial.print(", ");
-    Serial.println(gameHostData.Player4_Port);
+    Serial.println(GSD_HostGameStruct.Player4_Port);
+*/
 
 }
 
 void loop()
 {
+    if(IN_GAME_GUEST)
+    {
+        STATE_IN_GAME_GUEST();
+    }
+    else if(IN_GAME_HOST)
+    {
+        STATE_IN_GAME_HOST();
+    }
+
     lv_timer_handler(); /* let the GUI do its work */
     delaySafeMilli(5); /* let this time pass */
 }
