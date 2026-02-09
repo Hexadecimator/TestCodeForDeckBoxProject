@@ -63,7 +63,7 @@ IPAddress resetAddress(0, 0, 0, 0);
 // O-----------------------------------------------------------------------O
 // | Game state related variables
 // O-----------------------------------------------------------------------O
-#define TOTAL_PLAYER_COUNT 2
+#define TOTAL_PLAYER_COUNT 4
 
 int startingLifeTotal = 40;
 
@@ -1113,83 +1113,196 @@ void STATE_JOINING_GAME_HOST_NEGOTIATE_WITH_GUESTS()
 
 }
 
+unsigned long guestLastUpdateSendTime = 0;
+unsigned long guestTimeBetweenUpdates = 250;
 void STATE_IN_GAME_GUEST()
 {
     if(increaseHealthButtonClicked)
     {
-        // TODO: increment player health in GSD_PlayerDataStruct
-        Serial.println("INCREASE HEALTH");
+        GSD_PlayerDataStruct.playerHealth += 1;
         increaseHealthButtonClicked = false;
     }
 
     if(decreaseHealthButtonClicked)
     {
-        // TODO: decrement player health
-        Serial.println("DECREASE HEALTH");
+        GSD_PlayerDataStruct.playerHealth -= 1;
         decreaseHealthButtonClicked = false;
     }
 
-    GameStateStruct gameState;
+    //char rxBuffer[128];
+    int packetSize = udp.parsePacket();
+    if(packetSize > 0)
+    {
+        Serial.println("IN-GAME: Received UDP Packet");
+        //int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+        //rxBuffer[len] = '\0';
 
-    Serial.println("I have made it into the STATE_IN_GAME_GUEST function");
-    Serial.print("My player ID was ");
-    Serial.println((int)GSD_PlayerDataStruct.playerId);
+        if(packetSize == sizeof(GameStateStruct))
+        {
+            Serial.println("IN-GAME: UDP Size = GameStateStruct");
+            // received a status update from host
+            GameStateStruct pkt;
+            udp.read((uint8_t*)&pkt, sizeof(pkt));
 
-    // TODO: first, create the screen and assign different players to the different labels
-    // start a while loop that does 3 things:
-    // 1. receives the gamestate struct from the host and updates its own gamestate variable
-    // 2. 1-4 times per second sends its health (and poison and stuff?) back to the host
-    // 3. 
+            // guests cannot be player 1 ID
+            GSD_GameStateStruct.player1_Health = pkt.player1_Health;
 
+            if(!(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_2)) 
+            {
+                GSD_GameStateStruct.player2_Health = pkt.player2_Health;
+            }
+
+            if(!(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_3)) 
+            {
+                GSD_GameStateStruct.player3_Health = pkt.player3_Health;
+            }
+
+            if(!(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_4)) 
+            {
+                GSD_GameStateStruct.player4_Health = pkt.player4_Health;
+            }   
+        }
+
+        if(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_2)
+        {
+            GSD_GameStateStruct.player2_Health = GSD_PlayerDataStruct.playerHealth;
+        }
+
+        if(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_3)
+        {
+            GSD_GameStateStruct.player3_Health = GSD_PlayerDataStruct.playerHealth;
+        }
+
+        if(GSD_PlayerDataStruct.playerId == playerGameIDOrder::PLAYER_4)
+        {
+            GSD_GameStateStruct.player4_Health = GSD_PlayerDataStruct.playerHealth;
+        }
+
+        // Update the screen
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player1_Health);
+        lv_label_set_text(sc5Player1HealthValueLabel, buf);
+
+        snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player2_Health);
+        lv_label_set_text(sc5Player2HealthValueLabel, buf);
+
+        snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player3_Health);
+        lv_label_set_text(sc5Player3HealthValueLabel, buf);
+
+        snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player4_Health);
+        lv_label_set_text(sc5Player4HealthValueLabel, buf);
+
+        if((millis() - guestLastUpdateSendTime) >= guestTimeBetweenUpdates)
+        {
+            Serial.println("IN-GAME: TRANSMITTING GAMESTATE UPDATES");
+            // Write game state back to the clients
+            // Player 2
+            udp.beginPacket(GSD_PlayerDataStruct.HostIPAddress, UDP_PORT); // TODO Should have grabbed host port too?
+            udp.write((uint8_t*)&GSD_PlayerDataStruct, sizeof(GSD_PlayerDataStruct));
+            udp.endPacket();
+
+            delaySafeMilli(20);
+
+            guestLastUpdateSendTime = millis();
+        }
+    }
 }
 
+unsigned long hostLastUpdateSendTime = 0;
+unsigned long hostTimeBetweenUpdates = 500;
 void STATE_IN_GAME_HOST()
 {   
     if(increaseHealthButtonClicked)
     {
-        // TODO: increment player 1 health
-        Serial.println("INCREASE HEALTH");
+        GSD_GameStateStruct.player1_Health += 1;
         increaseHealthButtonClicked = false;
     }
 
     if(decreaseHealthButtonClicked)
     {
-        // TODO: decrement player 1 health
-        Serial.println("DECREASE HEALTH");
+        GSD_GameStateStruct.player1_Health -= 1;
         decreaseHealthButtonClicked = false;
     }
 
-/*
-    Serial.println("I have made it into the STATE_IN_GAME_HOST function");
-    Serial.print("Player 1 Info: ");
-    Serial.print(GSD_HostGameStruct.Player1_ID);
-    Serial.print(", ");
-    Serial.print(GSD_HostGameStruct.Player1_IP_Address);
-    Serial.print(", ");
-    Serial.println(GSD_HostGameStruct.Player1_Port);
+    //char rxBuffer[128];
+    int packetSize = udp.parsePacket();
+    if(packetSize > 0)
+    {
+        Serial.println("IN-GAME: Received UDP Packet");
+        //int len = udp.read(rxBuffer, sizeof(rxBuffer) - 1);
+        //rxBuffer[len] = '\0';
 
-    Serial.print("Player 2 Info: ");
-    Serial.print(GSD_HostGameStruct.Player2_ID);
-    Serial.print(", ");
-    Serial.print(GSD_HostGameStruct.Player2_IP_Address);
-    Serial.print(", ");
-    Serial.println(GSD_HostGameStruct.Player2_Port);
+        // TODO: Handle string commands if needed (like for dropping?)
 
-    Serial.print("Player 3 Info: ");
-    Serial.print(GSD_HostGameStruct.Player3_ID);
-    Serial.print(", ");
-    Serial.print(GSD_HostGameStruct.Player3_IP_Address);
-    Serial.print(", ");
-    Serial.println(GSD_HostGameStruct.Player3_Port);
+        if(packetSize == sizeof(PlayerClassStruct))
+        {
+            Serial.println("IN-GAME: UDP Size = PlayerClassStruct");
+            // received a status update from a player
+            PlayerClassStruct pkt;
+            udp.read((uint8_t*)&pkt, sizeof(pkt));
 
-    Serial.print("Player 4 Info: ");
-    Serial.print(GSD_HostGameStruct.Player4_ID);
-    Serial.print(", ");
-    Serial.print(GSD_HostGameStruct.Player4_IP_Address);
-    Serial.print(", ");
-    Serial.println(GSD_HostGameStruct.Player4_Port);
-*/
+            if(pkt.playerId == playerGameIDOrder::PLAYER_2)
+            {
+                Serial.println("IN-GAME: Received P2 HP Update");
+                GSD_GameStateStruct.player2_Health = pkt.playerHealth;
+            }
+            else if(pkt.playerId == playerGameIDOrder::PLAYER_3)
+            {
+                Serial.println("IN-GAME: Received P3 HP Update");
+                GSD_GameStateStruct.player3_Health = pkt.playerHealth;
+            }
+            else if(pkt.playerId == playerGameIDOrder::PLAYER_4)
+            {
+                Serial.println("IN-GAME: Received P4 HP Update");
+                GSD_GameStateStruct.player4_Health = pkt.playerHealth;
+            }
+        }
+    }
 
+    // Update the screen
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player1_Health);
+    lv_label_set_text(sc5Player1HealthValueLabel, buf);
+
+    snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player2_Health);
+    lv_label_set_text(sc5Player2HealthValueLabel, buf);
+
+    snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player3_Health);
+    lv_label_set_text(sc5Player3HealthValueLabel, buf);
+
+    snprintf(buf, sizeof(buf), "%d", GSD_GameStateStruct.player4_Health);
+    lv_label_set_text(sc5Player4HealthValueLabel, buf);
+
+    if((millis() - hostLastUpdateSendTime) >= hostTimeBetweenUpdates)
+    {
+        Serial.println("IN-GAME: TRANSMITTING GAMESTATE UPDATES");
+        // Write game state back to the clients
+        // Player 2
+        udp.beginPacket(GSD_HostGameStruct.Player2_IP_Address, GSD_HostGameStruct.Player2_Port);
+        udp.write((uint8_t*)&GSD_GameStateStruct, sizeof(GSD_GameStateStruct));
+        udp.endPacket();
+
+        delaySafeMilli(20);
+
+        // Player 3
+        udp.beginPacket(GSD_HostGameStruct.Player3_IP_Address, GSD_HostGameStruct.Player3_Port);
+        udp.write((uint8_t*)&GSD_GameStateStruct, sizeof(GSD_GameStateStruct));
+        udp.endPacket();
+
+        delaySafeMilli(20);
+        
+        // Player 4
+        udp.beginPacket(GSD_HostGameStruct.Player4_IP_Address, GSD_HostGameStruct.Player4_Port);
+        udp.write((uint8_t*)&GSD_GameStateStruct, sizeof(GSD_GameStateStruct));
+        udp.endPacket();
+
+        delaySafeMilli(20);
+
+        hostLastUpdateSendTime = millis();
+    }
+
+    // TODO: Track time between receiving player update data to try to understand if timeout?
+    // How to end the game? 
 }
 
 void loop()
